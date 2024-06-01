@@ -53,8 +53,8 @@ contract Example is PBTSimple, Ownable {
 
     /// @notice Initialize a mapping from chipAddress to tokenId.
     /// @param chipAddresses The addresses derived from the public keys of the chips
-    constructor(address[] memory chipAddresses, uint256[] memory tokenIds)
-        PBTSimple("Example", "EXAMPLE")
+    constructor(address[] memory chipAddresses, uint256[] memory tokenIds, uint256 maxBlockWindow)
+        PBTSimple("Example", "EXAMPLE", 100)
     {
         _seedChipToTokenMapping(chipAddresses, tokenIds);
     }
@@ -64,9 +64,10 @@ contract Example is PBTSimple, Ownable {
     /// @dev We will soon release a client-side library that helps with signature generation.
     function mintPBT(
         bytes calldata signatureFromChip,
-        uint256 blockNumberUsedInSig
+        uint256 blockNumberUsedInSig,
+        address chipId
     ) external {
-        _mintTokenWithChip(signatureFromChip, blockNumberUsedInSig);
+        _mint(msg.sender(), signatureFromChip, blockNumberUsedInSig, chipId);
     }
 }
 ```

@@ -12,7 +12,6 @@ import "@openzeppelin/contracts/utils/Strings.sol";
  * @dev Contract for PBTs (Physical Backed Tokens).
  * NFTs that are backed by a physical asset, through a chip embedded in the physical asset.
  */
-
 interface IPBT {
     /// @notice Returns the token id for a given chip address.
     /// @dev Throws if there is no existing token for the chip in the collection.
@@ -31,7 +30,27 @@ interface IPBT {
         view
         returns (bool);
 
-    /// @notice Transfers the token into the message sender's wallet.
+    /// @notice Transfers the token into the message sender's wallet. 
+    /// @param chipId Chip ID (address) of chip being transferred.
+    /// @param signatureFromChip An EIP-191 signature of (msgSender, blockhash), where blockhash is the block hash for blockNumberUsedInSig.
+    /// @param blockNumberUsedInSig The block number linked to the blockhash signed in signatureFromChip. Should be a recent block number.
+    /// @param useSafeTransferFrom Whether EIP-721's safeTransferFrom should be used in the implementation, instead of transferFrom.
+    /// @param payload Encoded payload containing data that can be used to determine how to execute the transfer. This param can be leveraged to add additional logic/context when PBT is transferred.
+    ///
+    /// @dev The implementation should check that block number be reasonably recent to avoid replay attacks of stale signatures.
+    /// The implementation should also verify that the address signed in the signature matches msgSender.
+	/// The implementation should also verify that the signatureFromChip was signed by the passed-in chipId.
+    /// If the address recovered from the signature matches a chip address that's bound to an existing token, the token should be transferred to msgSender.
+    /// If there is no existing token linked to the chip, the function should error.
+    function transferToken(
+        address chipId,
+        bytes calldata signatureFromChip,
+        uint256 blockNumberUsedInSig,
+        bool useSafeTransferFrom,
+        bytes calldata payload
+    ) external;
+
+    /// @notice This function is considered legacy. It is optional, only if you want to support legacy PBTs.
     /// @param signatureFromChip An EIP-191 signature of (msgSender, blockhash), where blockhash is the block hash for blockNumberUsedInSig.
     /// @param blockNumberUsedInSig The block number linked to the blockhash signed in signatureFromChip. Should be a recent block number.
     /// @param useSafeTransferFrom Whether EIP-721's safeTransferFrom should be used in the implementation, instead of transferFrom.
@@ -46,6 +65,7 @@ interface IPBT {
         bool useSafeTransferFrom
     ) external;
 
+    /// @notice This function is considered legacy. It is optional, only if you want to support legacy PBTs.
     /// @notice Calls transferTokenWithChip as defined above, with useSafeTransferFrom set to false.
     function transferTokenWithChip(bytes calldata signatureFromChip, uint256 blockNumberUsedInSig) external;
 
