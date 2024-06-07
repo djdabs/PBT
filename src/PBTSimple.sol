@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.13;
+pragma solidity ^0.8.26;
 
 import "./IPBT.sol";
 import "./ERC721ReadOnly.sol";
@@ -11,11 +11,12 @@ error NoMappedTokenForChip();
 error NoMintedTokenForChip();
 error ArrayLengthMismatch();
 error SeedingChipDataForExistingToken();
-error UpdatingChipForUnsetChipMapping();
+error UpdatingUnmintedChip();
 error InvalidBlockNumber();
 error BlockNumberTooOld();
 error NoSetTokenIdForChip();
-
+error DigestTimestampInFuture();
+error DigestTimestampTooOld();
 
 /**
  * Implementation of PBT where all chipId->tokenIds are preset in the contract by the contract owner.
@@ -24,16 +25,12 @@ contract PBTSimple is ERC721ReadOnly, IPBT {
     using SignatureChecker for address;
     using ECDSA for bytes32;
 
-    struct TokenData {
-        uint256 tokenId;
-        bool set;
-    }
-
     /* ============ State Variables ============ */
 
-    mapping(address => TokenData) chipIdTokenData;       // Maps chipId to tokenId and set status
-    mapping(uint256=>address) tokenIdToChipId;           // Maps tokenId to chipId
-    uint256 public immutable maxBlockWindow;             // Amount of blocks from commitBlock after which chip signatures are expired
+    mapping(address chipId => uint256 tokenId) public chipIdToTokenId;
+    mapping(uint256 tokenId => address chipId) public tokenIdToChipId;
+    uint256 public immutable maxDurationWindow; // Amount of time after which chip signatures are expired
+    mapping(address chipId => uint256 nonce) public previousNonce; // Maps chipId to previous nonce
 
     /* ============ Constructor ============ */
 
@@ -42,16 +39,10 @@ contract PBTSimple is ERC721ReadOnly, IPBT {
      *
      * @param name              The name of the token
      * @param symbol            The symbol of the token
-     * @param _maxBlockWindow   The maximum amount of blocks a signature used for updating chip table is valid for
+     * @param _maxDuratioWindow   The maximum amount of blocks a signature used for updating chip table is valid for
      */
-    constructor(
-        string memory name, 
-        string memory symbol,
-        uint256 _maxBlockWindow
-    ) 
-        ERC721ReadOnly(name, symbol) 
-    {
-        maxBlockWindow = _maxBlockWindow;
+    constructor(string memory name, string memory symbol, uint256 _maxDuratioWindow) ERC721ReadOnly(name, symbol) {
+        maxDurationWindow = _maxDuratioWindow;
     }
 
     /* ============ External Functions ============ */
@@ -64,23 +55,18 @@ contract PBTSimple is ERC721ReadOnly, IPBT {
     }
 
     function transferTokenWithChip(
-        bytes calldata /*signatureFromChip*/,
-        uint256 /*blockNumberUsedInSig*/,
+        bytes calldata, /*signatureFromChip*/
+        uint256, /*blockNumberUsedInSig*/
         bool /*useSafeTransfer*/
-    )
-        public
-        virtual
-    {
-        revert("Not implemented");
-    }
+    ) public virtual {}
 
     /**
      * @notice Allow a user to transfer a chip to a new owner with additional checks. The signature should be signed by the chip.
-     * 
+     *
      * @param chipId                Chip ID (address) of chip being transferred
      * @param signatureFromChip     Signature of keccak256(msg.sender, blockhash(blockNumberUsedInSig), payload) signed by chip
      *                              being transferred
-     * @param blockNumberUsedInSig  Block number used in signature
+     * @param timestampInSig        Timestamp used in signature
      * @param useSafeTransfer       Indicates whether to use safeTransferFrom or transferFrom
      * @param payload               Encoded payload containing data that can be used to determine how to execute the transfer. This
      *                              param can be leveraged to add additional logic/context when PBT is transferred.
@@ -88,28 +74,23 @@ contract PBTSimple is ERC721ReadOnly, IPBT {
     function transferToken(
         address chipId,
         bytes calldata signatureFromChip,
-        uint256 blockNumberUsedInSig,
+        uint256 timestampInSig,
         bool useSafeTransfer,
         bytes calldata payload
-    ) 
-        public
-        virtual
-    {
-        if(_exists(tokenIdFor(chipId)) != true){
+    ) public virtual {
+        if (!_exists(tokenIdFor(chipId))) {
             revert NoMintedTokenForChip();
         }
+
+        bytes32 signedHash = _createSignedHash(timestampInSig, chipId, msg.sender);
+        if (!SignatureCheckerLib.isValidSignatureNow(chipId, signedHash, signatureFromChip)) {
+            revert InvalidSignature();
+        }
+        previousNonce[chipId] = uint256(signedHash) ^ uint256(blockhash(block.number - 1));
 
         // ChipInfo memory chipInfo = chipTable[chipId];
         uint256 tokenId = tokenIdFor(chipId);
         address chipOwner = ownerOf(tokenId);
-
-        // Check that the signature is valid, create own scope to prevent stack-too-deep error
-        {
-            bytes32 signedHash = _createSignedHash(blockNumberUsedInSig, payload);
-            if(!chipId.isValidSignatureNow(signedHash, signatureFromChip)){
-                revert InvalidSignature();
-            }
-        }
 
         _transferPBT(chipOwner, tokenId, useSafeTransfer);
     }
@@ -130,7 +111,7 @@ contract PBTSimple is ERC721ReadOnly, IPBT {
         view
         returns (bool)
     {
-        bytes32 payloadHash = abi.encodePacked(payload).toEthSignedMessageHash();
+        bytes32 payloadHash = keccak256(abi.encodePacked(payload)).toEthSignedMessageHash();
         address chipId = tokenIdToChipId[tokenId];
         return chipId.isValidSignatureNow(payloadHash, signature);
     }
@@ -143,25 +124,10 @@ contract PBTSimple is ERC721ReadOnly, IPBT {
      */
     function tokenIdFor(address chipId) public view returns (uint256) {
         uint256 tokenId = tokenIdMappedFor(chipId);
-        if(_exists(tokenId) != true){
+        if (!_exists(tokenId)) {
             revert NoMintedTokenForChip();
         }
         return tokenId;
-    }
-
-    /**
-     * @dev Returns the mapped tokenId for a given chipId
-     *
-     * @param chipId       The chipId to check mappping
-     * @return tokenId     The tokenId for the given chipId
-     */
-    function tokenIdMappedFor(address chipId) public view returns (uint256) {
-        TokenData memory tokenData = chipIdTokenData[chipId];   
-
-        if (!tokenData.set) {
-            revert NoMappedTokenForChip();
-        }
-        return tokenData.tokenId;
     }
 
     /* ============ Internal Functions ============ */
@@ -173,33 +139,24 @@ contract PBTSimple is ERC721ReadOnly, IPBT {
      * @param to                        The address to mint the token to
      * @param chipId                    The chipId to mint the token for
      * @param signatureFromChip         The signature from the chip to validate the mint
-     * @param blockNumberUsedInSig      The block number used in the signature
+     * @param timestampInSig      Timestamp used in signature
      * @return uint256                  The tokenId of the newly minted token
      */
-    function _mint(
-        address to,
-        address chipId,
-        bytes calldata signatureFromChip,
-        uint256 blockNumberUsedInSig
-    )
+    function _mint(address to, address chipId, bytes calldata signatureFromChip, uint256 timestampInSig)
         internal
         virtual
-        returns(uint256)
+        returns (uint256)
     {
-        // Check that the signature is valid, create own scope to prevent stack-too-deep error
-        {
-            bytes32 signedHash = _createSignedHash(blockNumberUsedInSig, abi.encodePacked(to));
-            if(!chipId.isValidSignatureNow(signedHash, signatureFromChip)){
-                revert InvalidSignature();
-            }
+        bytes32 signedHash = _createSignedHash(timestampInSig, chipId, to);
+        if (!SignatureCheckerLib.isValidSignatureNow(chipId, signedHash, signatureFromChip)) {
+            revert InvalidSignature();
         }
+        previousNonce[chipId] = uint256(signedHash) ^ uint256(blockhash(block.number - 1));
 
-        TokenData memory tokenData = chipIdTokenData[chipId];   
-        if(!tokenData.set){
+        uint256 tokenId = chipIdToTokenId[chipId];
+        if (!tokenId) {
             revert NoSetTokenIdForChip();
         }
-
-        uint256 tokenId = tokenData.tokenId;
 
         _mint(to, tokenId);
         emit PBTMint(tokenId, chipId);
@@ -208,33 +165,23 @@ contract PBTSimple is ERC721ReadOnly, IPBT {
     }
 
     /**
-     * @dev Create a signed hash using the blockNumberUsedInSig and payload.
+     * @dev Create a signed hash using the timestampInSig and payload.
      *
-     * @param blockNumberUsedInSig        Block number used in signature     
-     * @param customPayload               Payload to encode 
-     * @return boolean              
+     * @param timestampInSig               Timestamp in signature
+     * @param chipId                       ChipId used in signature
+     * @param nftRecipient                 Address of the nft recipient
+     * @return boolean
      */
-    function _createSignedHash(
-        uint256 blockNumberUsedInSig,
-        bytes memory customPayload
-    )
+    function _createSignedHash(uint256 timestampInSig, address chipId, address nftRecipient)
         internal
         virtual
         returns (bytes32)
     {
-        // The blockNumberUsedInSig must be in a previous block because the blockhash of the current
-        // block does not exist yet.
-        if (block.number <= blockNumberUsedInSig) {
-            revert InvalidBlockNumber();
-        }
 
-        unchecked {
-            if (block.number - blockNumberUsedInSig > maxBlockWindow) {
-                revert BlockNumberTooOld();
-            }
-        }
+        if (timestampInSig > block.timestamp) revert DigestTimestampInFuture();
+        if (timestampInSig < block.timestamp - maxDurationWindow) revert DigestTimestampTooOld();
 
-        return abi.encodePacked(msg.sender, blockhash(blockNumberUsedInSig), customPayload).toEthSignedMessageHash();
+        return keccak256(abi.encode(address(this), block.chainid, previousNonce[chipId], nftRecipient, timestampInSig));
     }
 
     /**
@@ -255,7 +202,7 @@ contract PBTSimple is ERC721ReadOnly, IPBT {
     /**
      * @dev Should only be called for tokenIds that have not yet been minted.
      * If the tokenId has already been minted, use _updateChips instead.
-     * 
+     *
      * @param chipIds        Array of chipIds that will be mapped to tokenIds
      * @param tokenIds       Array of tokenIds to map the chipIds
      */
@@ -273,7 +220,6 @@ contract PBTSimple is ERC721ReadOnly, IPBT {
             revert ArrayLengthMismatch();
         }
         for (uint256 i = 0; i < tokenIdsLength; ++i) {
-            
             address chipId = chipIds[i];
             uint256 tokenId = tokenIds[i];
 
@@ -281,7 +227,7 @@ contract PBTSimple is ERC721ReadOnly, IPBT {
                 revert SeedingChipDataForExistingToken();
             }
 
-            chipIdTokenData[chipId] = TokenData(tokenId, true);
+            chipIdToTokenId[chipId] = tokenId;
             tokenIdToChipId[tokenId] = chipId;
         }
     }
@@ -290,7 +236,7 @@ contract PBTSimple is ERC721ReadOnly, IPBT {
      * @dev Should only be called for tokenIds that have been minted
      * If the tokenId hasn't been minted yet, use _seedChipToTokenMapping instead
      * Should only be used and called with care and rails to avoid a centralized entity swapping out valid chips.
-     * 
+     *
      * @param chipIdsOld       Array of old chipIds to change the mapping of token to a new chipId
      * @param chipIdsNew       Array of new chipIds to replace tokenId mapping of old chipIds
      */
@@ -301,21 +247,20 @@ contract PBTSimple is ERC721ReadOnly, IPBT {
 
         for (uint256 i = 0; i < chipIdsOld.length; ++i) {
             address oldChipId = chipIdsOld[i];
-            TokenData memory oldTokenData = chipIdTokenData[oldChipId];
 
-            if (!oldTokenData.set) {
-                revert UpdatingChipForUnsetChipMapping();
+            if (!tokenIdFor(oldChipId)) {
+                revert UpdatingUnmintedChip();
             }
 
             address newChipId = chipIdsNew[i];
-            uint256 tokenId = oldTokenData.tokenId;
-            chipIdTokenData[newChipId] = TokenData(tokenId, true);
+            uint256 tokenId = chipIdToTokenId[oldChipId];
+            chipIdToTokenId[newChipId] = tokenId;
             tokenIdToChipId[tokenId] = newChipId;
-            if(_exists(tokenId)){
+            if (_exists(tokenId)) {
                 emit PBTChipRemapping(tokenId, oldChipId, newChipId);
             }
 
-            delete chipIdTokenData[oldChipId];
+            delete chipIdToTokenId[oldChipId];
         }
     }
 
