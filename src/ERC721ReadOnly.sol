@@ -6,7 +6,6 @@ import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 /**
  * An implementation of 721 that's publicly readonly (no approvals or transfers exposed).
  */
-
 contract ERC721ReadOnly is ERC721 {
     constructor(string memory name_, string memory symbol_) ERC721(name_, symbol_) {}
 

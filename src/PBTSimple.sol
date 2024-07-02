@@ -83,7 +83,7 @@ contract PBTSimple is ERC721ReadOnly, IPBT {
         }
 
         bytes32 signedHash = _createSignedHash(timestampInSig, chipId, msg.sender);
-        if (!SignatureCheckerLib.isValidSignatureNow(chipId, signedHash, signatureFromChip)) {
+        if (!SignatureChecker.isValidSignatureNow(chipId, signedHash, signatureFromChip)) {
             revert InvalidSignature();
         }
         previousNonce[chipId] = uint256(signedHash) ^ uint256(blockhash(block.number - 1));
@@ -123,7 +123,7 @@ contract PBTSimple is ERC721ReadOnly, IPBT {
      * @return tokenId     The tokenId for the given chipId
      */
     function tokenIdFor(address chipId) public view returns (uint256) {
-        uint256 tokenId = tokenIdMappedFor(chipId);
+        uint256 tokenId = chipIdToTokenId[chipId];
         if (!_exists(tokenId)) {
             revert NoMintedTokenForChip();
         }
@@ -139,7 +139,7 @@ contract PBTSimple is ERC721ReadOnly, IPBT {
      * @param to                        The address to mint the token to
      * @param chipId                    The chipId to mint the token for
      * @param signatureFromChip         The signature from the chip to validate the mint
-     * @param timestampInSig      Timestamp used in signature
+     * @param timestampInSig            Timestamp used in signature
      * @return uint256                  The tokenId of the newly minted token
      */
     function _mint(address to, address chipId, bytes calldata signatureFromChip, uint256 timestampInSig)
@@ -148,15 +148,15 @@ contract PBTSimple is ERC721ReadOnly, IPBT {
         returns (uint256)
     {
         bytes32 signedHash = _createSignedHash(timestampInSig, chipId, to);
-        if (!SignatureCheckerLib.isValidSignatureNow(chipId, signedHash, signatureFromChip)) {
+        if (!SignatureChecker.isValidSignatureNow(chipId, signedHash, signatureFromChip)) {
             revert InvalidSignature();
         }
         previousNonce[chipId] = uint256(signedHash) ^ uint256(blockhash(block.number - 1));
 
         uint256 tokenId = chipIdToTokenId[chipId];
-        if (!tokenId) {
-            revert NoSetTokenIdForChip();
-        }
+        // if (!tokenId) {
+        //     revert NoSetTokenIdForChip();
+        // }
 
         _mint(to, tokenId);
         emit PBTMint(tokenId, chipId);
@@ -248,9 +248,9 @@ contract PBTSimple is ERC721ReadOnly, IPBT {
         for (uint256 i = 0; i < chipIdsOld.length; ++i) {
             address oldChipId = chipIdsOld[i];
 
-            if (!tokenIdFor(oldChipId)) {
-                revert UpdatingUnmintedChip();
-            }
+            // if (!tokenIdFor(oldChipId)) {
+            //     revert UpdatingUnmintedChip();
+            // }
 
             address newChipId = chipIdsNew[i];
             uint256 tokenId = chipIdToTokenId[oldChipId];

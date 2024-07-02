@@ -21,18 +21,18 @@ contract PBTSimpleMock is PBTSimple {
         _seedChipToTokenMapping(chipAddresses, tokenIds, throwIfTokenAlreadyMinted);
     }
 
-    function getTokenData(address chipId) public view returns (TokenData memory) {
-        return chipIdTokenData[chipId];
+    function getTokenData(address chipId) public view returns (uint256) {
+        return chipIdToTokenId[chipId];
     }
 
     function updateChips(address[] calldata chipAddressesOld, address[] calldata chipAddressesNew) public {
         _updateChips(chipAddressesOld, chipAddressesNew);
     }
 
-    function mint(bytes calldata signatureFromChip, uint256 blockNumberUsedInSig, address chipId)
+    function mint(address chipId, bytes calldata signatureFromChip, uint256 timestampInSig)
         public
         returns (uint256)
     {
-        return _mint(msg.sender(), chipId, signatureFromChip, blockNumberUsedInSig);
+        return _mint(msg.sender, chipId, signatureFromChip, timestampInSig);
     }
 }
